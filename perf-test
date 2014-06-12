@@ -1,0 +1,201 @@
+#!/usr/bin/python
+#
+# Copyright (c) 2013 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+"""Basic performance test for sync_server package."""
+
+import argparse
+import ConfigParser
+import cx_Oracle
+import random
+import re
+import os
+import sys
+import timeit
+
+import sync_db_test.database
+
+# TODO: *_PER_* shouldn't be constant. Set min/max or mean/std. dev.?
+
+NUM_DEVICES = 1000
+CONFIGS_PER_DEVICE = 10
+NUM_REPOS = 100
+NUM_DISKS = 100
+NUM_VMS = 100
+CONFIGS_PER_VM = 10
+DISKS_PER_VM = 2
+VMS_PER_DEVICE = 4
+
+def main():
+    args = parse_args()
+    db = set_up_database(args)
+    devices, device_disks, device_repo = create_data(db)
+    gather_stats(db)
+    run_tests(db, args.num_calls, devices, device_disks, device_repo)
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-c", "--config",
+                        metavar="CONFIG_FILE",
+                        help="configuration file")
+
+    parser.add_argument("num_calls",
+                        metavar="NUM_CALLS",
+                        nargs="?",
+                        type=int,
+                        default=10000)
+
+    return parser.parse_args()
+
+def set_up_database(args):
+    print "Setting up database..."
+
+    db = sync_db_test.database.Database(args.config)
+    db.ensure_clean()
+    return db
+
+def create_data(db):
+    print "Creating data..."
+
+    admin = db.get_admin_connection()
+
+    repos = []
+    for i in range(NUM_REPOS):
+        repos.append(admin.sa.add_repo('{0}'.format(i),
+                                       '{0}'.format(i),
+                                       '{0}.tar'.format(i),
+                                       i,
+                                       '{0:064x}'.format(i)))
+
+    disks = []
+    for i in range(NUM_DISKS):
+        disks.append(admin.sa.add_disk('disk {0}'.format(i),
+                                       'v',
+                                       '{0}.vhd'.format(i),
+                                       i,
+                                       '{0:064x}'.format(i),
+                                       '{0:0128x}'.format(i),
+                                       False,
+                                       False))
+
+    vms = []
+    vm_disks = {}
+    for i in range(NUM_VMS):
+        configs = ["{0}:{0}:{0}".format(j) for j in range(CONFIGS_PER_VM)]
+        disks_for_vm = random.sample(disks, DISKS_PER_VM)
+        vm = admin.sa.add_vm('vm {0}'.format(i), disks_for_vm, configs)
+        vms.append(vm)
+        vm_disks[vm] = disks_for_vm
+
+    devices = []
+    device_repo = {}
+    for i in range(NUM_DEVICES):
+        repo = random.choice(repos)
+        configs = ["{0}:{0}:{0}".format(j) for j in range(CONFIGS_PER_DEVICE)]
+        device = admin.sa.add_device('device {0}'.format(i),
+                                     repo,
+                                     configs)
+        devices.append(device)
+        device_repo[device] = repo
+
+    vm_instances = []
+    device_disks = {}
+    for device in devices:
+        for i, vm in enumerate(random.sample(vms, VMS_PER_DEVICE)):
+            admin.sa.add_vm_instance(device, vm,
+                                     'vm instance {0}'.format(i))
+            device_disks.setdefault(device, []).extend(vm_disks[vm])
+
+    return devices, device_disks, device_repo
+
+def gather_stats(db):
+    print "Gathering statistics..."
+
+    owner = db.get_owner_connection()
+    owner.connection.cursor().callproc("dbms_stats.gather_schema_stats",
+                                       keywordParameters={
+                                           "ownname": None})
+
+def run_tests(db, num_calls, devices, device_disks, device_repo):
+    print "Running tests..."
+    print
+    print "{0:<20}  {1:>8}  {2:>8}  {3:>8}".format(
+        "test", "calls", "s", "ms/call")
+    print "{0:-<20}  {1:->8}  {2:->8}  {3:->8}".format("", "", "", "")
+
+    server = db.get_server_connection()
+    test_get_device_secret(server, num_calls, devices)
+    test_get_device_state(server, num_calls, devices)
+    test_get_disk_path(server, num_calls, devices, device_disks)
+    test_get_repo_path(server, num_calls, devices, device_repo)
+    test_report_device_state(server, num_calls, devices)
+
+    print
+
+def test_get_device_secret(server, num_calls, devices):
+    def test():
+        device = random.choice(devices)
+        shared_secret = server.ss.get_device_secret(device)
+
+    time_call(test, num_calls, "get_device_secret")
+
+def test_get_device_state(server, num_calls, devices):
+    def test():
+        device = random.choice(devices)
+        (device_info,
+         device_config,
+         vm_instances,
+         vm_instance_config,
+         vm_instance_disks,
+         disks) = server.ss.get_device_state(device)
+
+    time_call(test, num_calls, "get_device_state")
+
+def test_get_disk_path(server, num_calls, devices, device_disks):
+    def test():
+        device = random.choice(devices)
+        disk = random.choice(device_disks[device])
+        file_path = server.ss.get_disk_path(device, disk)
+
+    time_call(test, num_calls, "get_disk_path")
+
+def test_get_repo_path(server, num_calls, devices, device_repo):
+    def test():
+        device = random.choice(devices)
+        repo = device_repo[device]
+        file_path = server.ss.get_repo_path(device, repo)
+
+    time_call(test, num_calls, "get_repo_path")
+
+def test_report_device_state(server, num_calls, devices):
+    def test():
+        device = random.choice(devices)
+        server.ss.report_device_state(device,
+                                   "release",
+                                   "build")
+
+    time_call(test, num_calls, "report_device_state")
+
+def time_call(func, num_calls, name):
+    time = timeit.timeit(func, number=num_calls)
+
+    print "{0:<20}  {1:>8}  {2:>8.3f}  {3:>8.3f}".format(
+        name, num_calls, time, 1000.0 * time / num_calls)
+
+main()

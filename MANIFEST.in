@@ -1,0 +1,4 @@
+include sync_db/schema/schema.json
+include sync_db/schema/*.sql
+include sync_db/schema/packages/*.sql
+include generated/sync-database

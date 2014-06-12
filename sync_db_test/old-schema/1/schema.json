@@ -1,0 +1,39 @@
+{
+    "version": "1",
+    "upgrade-from": [],
+    "commands":
+    {
+        "destroy": [
+            ["sys",     "drop-users.sql"]
+        ],
+
+        "install": [
+            ["sys",     "create-users.sql"],
+            ["owner",   "create-tables.sql"],
+            ["owner",   "create-foreign-keys.sql"],
+            ["owner",   "check-foreign-keys.sql"],
+            ["owner",   "packages/sync_admin.sql"],
+            ["owner",   "packages/sync_error.sql"],
+            ["owner",   "packages/sync_license.sql"],
+            ["owner",   "packages/sync_server.sql"],
+            ["owner",   "packages/sync_admin_body.sql"],
+            ["owner",   "packages/sync_error_body.sql"],
+            ["owner",   "packages/sync_license_body.sql"],
+            ["owner",   "packages/sync_server_body.sql"],
+            ["owner",   "check-objects.sql"],
+            ["owner",   "grants.sql"],
+            ["admin",   "create-synonyms-common.sql"],
+            ["admin",   "create-synonyms-admin.sql"],
+            ["admin",   "check-synonyms.sql"],
+            ["admin",   "check-objects.sql"],
+            ["license", "create-synonyms-common.sql"],
+            ["license", "create-synonyms-license.sql"],
+            ["license", "check-synonyms.sql"],
+            ["license", "check-objects.sql"],
+            ["server",  "create-synonyms-common.sql"],
+            ["server",  "create-synonyms-server.sql"],
+            ["server",  "check-synonyms.sql"],
+            ["server",  "check-objects.sql"]
+        ]
+    }
+}

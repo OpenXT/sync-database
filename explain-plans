@@ -1,0 +1,136 @@
+#!/usr/bin/python
+#
+# Copyright (c) 2012 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+"""Show the execution plans for all queries in sync_server.
+
+This is a bit of a hack and more fragile than I'd like, but it's convenient
+for sanity-checking the queries in sync_server after making changes to the
+schema or to sync_server itself."""
+
+import argparse
+import ConfigParser
+import cx_Oracle
+import os
+import re
+
+import sync_db_test.database
+
+def main():
+    args = parse_args()
+    connection = connect(args)
+    queries = get_queries(connection)
+    show_query_execution_plans(connection, queries)
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-c", "--config",
+                        metavar="CONFIG_FILE",
+                        help="configuration file")
+
+    return parser.parse_args()
+
+def connect(args):
+    """Connect to database."""
+
+    db = sync_db_test.database.Database(args.config)
+    return db.get_owner_connection().connection
+
+def get_queries(connection):
+    """Attempt to extract all queries from sync_server package body."""
+
+    cursor = connection.cursor()
+
+    cursor.execute("select text "
+                   "from user_source "
+                   "where name = 'SYNC_SERVER' and "
+                   "      type = 'PACKAGE BODY'")
+
+    procedure = ""
+    query = ""
+    queries = []
+
+    for line, in cursor:
+        line = re.sub(r"--.*$", "", line)
+        if query:
+            query += line
+        else:
+            match = re.match(r"\s*(?:procedure|function)\s*(\w+)\b", line)
+            if match:
+                procedure = match.group(1)
+
+            match = re.search(r"(\s*\b(?:delete|insert|select|update)\b.*)",
+                              line, re.DOTALL)
+            if match:
+                query = match.group(1)
+
+        if query:
+            match = re.match(r"(.*);", query, re.DOTALL)
+            if match:
+                queries.append((procedure, match.group(1)))
+                query = ""
+
+    return queries
+
+def show_query_execution_plans(connection, queries):
+    """Show execution plan for all queries."""
+
+    print ("Note: The query execution plans will be influenced by the data\n"
+           "stored in the database and how recently statistics were\n"
+           "gathered. It may be useful to run perf-test first, which will\n"
+           "populate the tables with a large sample data set and gather\n"
+           "statistics.")
+
+    for procedure, query in queries:
+        modified_query = replace_vars(query)
+
+        print ("\n{0:=<100}\n\n"
+               "Procedure/function: {1}\n\n"
+               "Original query:\n"
+               "{2}\n\n"
+               "Modified query:\n"
+               "{3}\n".format("", procedure, query, modified_query))
+
+        print get_query_execution_plan(connection, modified_query)
+
+def get_query_execution_plan(connection, query):
+    """Get execution plan for query."""
+
+    connection.cursor().execute("explain plan for " + query)
+    
+    cursor = connection.cursor()
+    cursor.execute("select plan_table_output "
+                   "from table(dbms_xplan.display)")
+
+    return "\n".join([line for line, in cursor])
+
+def replace_vars(query):
+    """Attempt to replace pl/sql variables in query with bind variables."""
+
+    i = 0
+    while True:
+        match = re.match(r"(.*?)(?:\b\w+\.\w+\b|false_char|true_char)(.*)",
+                         query, re.DOTALL)
+        if match:
+            query = match.group(1) + ":x" + str(i) + match.group(2)
+            i += 1
+        else:
+            return query
+
+main()
